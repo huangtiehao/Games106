@@ -31,9 +31,15 @@
 
 // Contains everything required to render a glTF model in Vulkan
 // This class is heavily simplified (compared to glTF's feature set) but retains the basic glTF structure
+
 class VulkanglTFModel
 {
 public:
+
+	//hth
+
+	uint32_t activeAnimation = 0;
+	
 	// The class requires some Vulkan objects so it can create it's own resources
 	vks::VulkanDevice* vulkanDevice;
 	VkQueue copyQueue;
@@ -76,16 +82,18 @@ public:
 	};
 
 	// A node represents an object in the glTF scene graph
-	struct Node {
-		Node* parent;
-		std::vector<Node*> children;
-		Mesh mesh;
-		glm::mat4 matrix;
-		~Node() {
-			for (auto& child : children) {
-				delete child;
-			}
-		}
+	struct Node
+	{
+		Node *              parent;
+		uint32_t            index;
+		std::vector<Node *> children;
+		Mesh                mesh;
+		glm::vec3           translation{};
+		glm::vec3           scale{1.0f};
+		glm::quat           rotation{};
+		int32_t             skin = -1;
+		glm::mat4           matrix;
+		glm::mat4           getLocalMatrix();
 	};
 
 	// A glTF material stores information in e.g. the texture that is attached to it and colors
@@ -115,7 +123,33 @@ public:
 	std::vector<Texture> textures;
 	std::vector<Material> materials;
 	std::vector<Node*> nodes;
+	
+	//hth
+	struct AnimationSampler
+	{
+		std::string            interpolation;
+		std::vector<float>     inputs;
+		std::vector<glm::vec4> outputsVec4;
+	};
 
+	struct AnimationChannel
+	{
+		std::string path;
+		Node *      node;
+		uint32_t    samplerIndex;
+	};
+
+	struct Animation
+	{
+		std::string                   name;
+		std::vector<AnimationSampler> samplers;
+		std::vector<AnimationChannel> channels;
+		float                         start       = std::numeric_limits<float>::max();
+		float                         end         = std::numeric_limits<float>::min();
+		float                         currentTime = 0.0f;
+	};
+	std::vector<Animation> animations;
+	//hth
 	~VulkanglTFModel()
 	{
 		for (auto node : nodes) {
@@ -375,7 +409,68 @@ public:
 			drawNode(commandBuffer, pipelineLayout, node);
 		}
 	}
+	//hth 更新动画
+	void updateAnimation(float deltaTime)
+	{
+		if (activeAnimation > static_cast<uint32_t>(animations.size()) - 1)
+		{
+			std::cout << "No animation with index " << activeAnimation << std::endl;
+			return;
+		}
+		Animation &animation = animations[activeAnimation];
+		animation.currentTime += deltaTime;
+		if (animation.currentTime > animation.end)
+		{
+			animation.currentTime -= animation.end;
+		}
 
+		for (auto &channel : animation.channels)
+		{
+			AnimationSampler &sampler = animation.samplers[channel.samplerIndex];
+			for (size_t i = 0; i < sampler.inputs.size() - 1; i++)
+			{
+				if (sampler.interpolation != "LINEAR")
+				{
+					std::cout << "This sample only supports linear interpolations\n";
+					continue;
+				}
+
+				// Get the input keyframe values for the current time stamp
+				if ((animation.currentTime >= sampler.inputs[i]) && (animation.currentTime <= sampler.inputs[i + 1]))
+				{
+					float a = (animation.currentTime - sampler.inputs[i]) / (sampler.inputs[i + 1] - sampler.inputs[i]);
+					if (channel.path == "translation")
+					{
+						channel.node->translation = glm::mix(sampler.outputsVec4[i], sampler.outputsVec4[i + 1], a);
+					}
+					if (channel.path == "rotation")
+					{
+						glm::quat q1;
+						q1.x = sampler.outputsVec4[i].x;
+						q1.y = sampler.outputsVec4[i].y;
+						q1.z = sampler.outputsVec4[i].z;
+						q1.w = sampler.outputsVec4[i].w;
+
+						glm::quat q2;
+						q2.x = sampler.outputsVec4[i + 1].x;
+						q2.y = sampler.outputsVec4[i + 1].y;
+						q2.z = sampler.outputsVec4[i + 1].z;
+						q2.w = sampler.outputsVec4[i + 1].w;
+
+						channel.node->rotation = glm::normalize(glm::slerp(q1, q2, a));
+					}
+					if (channel.path == "scale")
+					{
+						channel.node->scale = glm::mix(sampler.outputsVec4[i], sampler.outputsVec4[i + 1], a);
+					}
+				}
+			}
+		}
+		for (auto &node : nodes)
+		{
+			updateJoints(node);
+		}
+	}
 };
 
 class VulkanExample : public VulkanExampleBase
@@ -737,6 +832,11 @@ public:
 		renderFrame();
 		if (camera.updated) {
 			updateUniformBuffers();
+		}
+		//hth 更新动画
+		if (!paused)
+		{
+			glTFModel.updateAnimation(frameTimer);
 		}
 	}
 
