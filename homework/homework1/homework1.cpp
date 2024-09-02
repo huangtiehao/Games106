@@ -52,6 +52,8 @@ public:
 		glm::vec3 color;
 	};
 
+
+	
 	// Single vertex buffer for all primitives
 	struct {
 		VkBuffer buffer;
@@ -94,6 +96,16 @@ public:
 		int32_t             skin = -1;
 		glm::mat4           matrix;
 		glm::mat4           getLocalMatrix();
+	};
+	
+	struct Skin
+	{
+		std::string            name;
+		Node *                 skeletonRoot = nullptr;
+		std::vector<glm::mat4> inverseBindMatrices;
+		std::vector<Node *>    joints;
+		vks::Buffer            ssbo;
+		VkDescriptorSet        descriptorSet;
 	};
 
 	// A glTF material stores information in e.g. the texture that is attached to it and colors
@@ -149,6 +161,7 @@ public:
 		float                         currentTime = 0.0f;
 	};
 	std::vector<Animation> animations;
+	std::vector<Skin>      skins;
 	//hth
 	~VulkanglTFModel()
 	{
@@ -409,6 +422,42 @@ public:
 			drawNode(commandBuffer, pipelineLayout, node);
 		}
 	}
+	glm::mat4 getNodeMatrix(VulkanglTFModel::Node *node)
+	{
+		glm::mat4              nodeMatrix    = node->getLocalMatrix();
+		VulkanglTFModel::Node *currentParent = node->parent;
+		while (currentParent)
+		{
+			nodeMatrix    = currentParent->getLocalMatrix() * nodeMatrix;
+			currentParent = currentParent->parent;
+		}
+		return nodeMatrix;
+	}
+
+	void updateJoints(VulkanglTFModel::Node *node)
+	{
+		if (node->skin > -1)
+		{
+			// Update the joint matrices
+			glm::mat4              inverseTransform = glm::inverse(getNodeMatrix(node));
+			Skin                   skin             = skins[node->skin];
+			size_t                 numJoints        = (uint32_t) skin.joints.size();
+			std::vector<glm::mat4> jointMatrices(numJoints);
+			for (size_t i = 0; i < numJoints; i++)
+			{
+				jointMatrices[i] = getNodeMatrix(skin.joints[i]) * skin.inverseBindMatrices[i];
+				jointMatrices[i] = inverseTransform * jointMatrices[i];
+			}
+			// Update ssbo
+			skin.ssbo.copyTo(jointMatrices.data(), jointMatrices.size() * sizeof(glm::mat4));
+		}
+
+		for (auto &child : node->children)
+		{
+			updateJoints(child);
+		}
+	}
+
 	//hth 更新动画
 	void updateAnimation(float deltaTime)
 	{
