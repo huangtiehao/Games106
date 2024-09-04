@@ -98,16 +98,6 @@ public:
 	};
 	
 
-	struct Skin
-	{
-		std::string            name;
-		Node *                 skeletonRoot = nullptr;
-		std::vector<glm::mat4> inverseBindMatrices;
-		std::vector<Node *>    joints;
-		vks::Buffer            ssbo;
-		VkDescriptorSet        descriptorSet;
-	};
-
 	// A glTF material stores information in e.g. the texture that is attached to it and colors
 	struct Material {
 		glm::vec4 baseColorFactor = glm::vec4(1.0f);
@@ -147,7 +137,7 @@ public:
 	struct AnimationChannel
 	{
 		std::string path;
-		Node *      node;
+		Node *      node;//根节点
 		uint32_t    samplerIndex;
 	};
 
@@ -161,7 +151,6 @@ public:
 		float                         currentTime = 0.0f;
 	};
 	std::vector<Animation> animations;
-	std::vector<Skin>      skins;
 	//hth
 	~VulkanglTFModel()
 	{
@@ -248,12 +237,13 @@ public:
 		}
 	}
 
-	void loadNode(const tinygltf::Node& inputNode, const tinygltf::Model& input, VulkanglTFModel::Node* parent, std::vector<uint32_t>& indexBuffer, std::vector<VulkanglTFModel::Vertex>& vertexBuffer)
+	void loadNode(const tinygltf::Node& inputNode, const tinygltf::Model& input, VulkanglTFModel::Node* parent, uint32_t nodeIndex, std::vector<uint32_t>& indexBuffer, std::vector<VulkanglTFModel::Vertex>& vertexBuffer)
 	{
 		VulkanglTFModel::Node* node = new VulkanglTFModel::Node{};
 		node->matrix = glm::mat4(1.0f);
 		node->parent = parent;
-
+		node->index=nodeIndex;
+		
 		// Get the local node matrix
 		// It's either made up from translation, rotation, scale or a 4x4 matrix
 		if (inputNode.translation.size() == 3) {
@@ -273,7 +263,7 @@ public:
 		// Load node's children
 		if (inputNode.children.size() > 0) {
 			for (size_t i = 0; i < inputNode.children.size(); i++) {
-				loadNode(input.nodes[inputNode.children[i]], input , node, indexBuffer, vertexBuffer);
+				loadNode(input.nodes[inputNode.children[i]], input , node,inputNode.children[i], indexBuffer, vertexBuffer);
 			}
 		}
 
@@ -463,29 +453,6 @@ public:
 		}
 		return nodeFound;
 	}
-	void updateJoints(VulkanglTFModel::Node *node)
-	{
-		if (node->skin > -1)
-		{
-			// Update the joint matrices
-			glm::mat4              inverseTransform = glm::inverse(getNodeMatrix(node));
-			Skin                   skin             = skins[node->skin];
-			size_t                 numJoints        = (uint32_t) skin.joints.size();
-			std::vector<glm::mat4> jointMatrices(numJoints);
-			for (size_t i = 0; i < numJoints; i++)
-			{
-				jointMatrices[i] = getNodeMatrix(skin.joints[i]) * skin.inverseBindMatrices[i];
-				jointMatrices[i] = inverseTransform * jointMatrices[i];
-			}
-			// Update ssbo
-			skin.ssbo.copyTo(jointMatrices.data(), jointMatrices.size() * sizeof(glm::mat4));
-		}
-
-		for (auto &child : node->children)
-		{
-			updateJoints(child);
-		}
-	}
 
 	//hth 更新动画
 	void updateAnimation(float deltaTime)
@@ -501,7 +468,7 @@ public:
 		{
 			animation.currentTime -= animation.end;
 		}
-
+		std::cout<<"animations size: "<<animations.size()<<std::endl;
 		for (auto &channel : animation.channels)
 		{
 			AnimationSampler &sampler = animation.samplers[channel.samplerIndex];
@@ -544,54 +511,8 @@ public:
 				}
 			}
 		}
-		for (auto &node : nodes)
-		{
-			updateJoints(node);
-		}
 	}
-	void loadSkins(tinygltf::Model &input)
-	{
-		skins.resize(input.skins.size());
 
-		for (size_t i = 0; i < input.skins.size(); i++)
-		{
-			tinygltf::Skin glTFSkin = input.skins[i];
-
-			skins[i].name = glTFSkin.name;
-			// Find the root node of the skeleton
-			skins[i].skeletonRoot = nodeFromIndex(glTFSkin.skeleton);
-
-			// Find joint nodes
-			for (int jointIndex : glTFSkin.joints)
-			{
-				Node *node = nodeFromIndex(jointIndex);
-				if (node)
-				{
-					skins[i].joints.push_back(node);
-				}
-			}
-
-			// Get the inverse bind matrices from the buffer associated to this skin
-			if (glTFSkin.inverseBindMatrices > -1)
-			{
-				const tinygltf::Accessor &  accessor   = input.accessors[glTFSkin.inverseBindMatrices];
-				const tinygltf::BufferView &bufferView = input.bufferViews[accessor.bufferView];
-				const tinygltf::Buffer &    buffer     = input.buffers[bufferView.buffer];
-				skins[i].inverseBindMatrices.resize(accessor.count);
-				memcpy(skins[i].inverseBindMatrices.data(), &buffer.data[accessor.byteOffset + bufferView.byteOffset], accessor.count * sizeof(glm::mat4));
-
-				// Store inverse bind matrices for this skin in a shader storage buffer object
-				// To keep this sample simple, we create a host visible shader storage buffer
-				VK_CHECK_RESULT(vulkanDevice->createBuffer(
-					VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-					VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-					&skins[i].ssbo,
-					sizeof(glm::mat4) * skins[i].inverseBindMatrices.size(),
-					skins[i].inverseBindMatrices.data()));
-				VK_CHECK_RESULT(skins[i].ssbo.map());
-			}
-		}
-	}
 	void loadAnimations(tinygltf::Model &input)
 	{
 		animations.resize(input.animations.size());
@@ -621,15 +542,15 @@ public:
 						dstSampler.inputs.push_back(buf[index]);
 					}
 					// Adjust animation's start and end times
-					for (auto input : animations[i].samplers[j].inputs)
+					for (auto timeInput : animations[i].samplers[j].inputs)
 					{
-						if (input < animations[i].start)
+						if (timeInput < animations[i].start)
 						{
-							animations[i].start = input;
+							animations[i].start = timeInput;
 						};
-						if (input > animations[i].end)
+						if (timeInput > animations[i].end)
 						{
-							animations[i].end = input;
+							animations[i].end = timeInput;
 						}
 					}
 				}
@@ -668,6 +589,7 @@ public:
 
 			// Channels
 			animations[i].channels.resize(glTFAnimation.channels.size());
+			std::cout<<animations[i].channels.size()<<std::endl;
 			for (size_t j = 0; j < glTFAnimation.channels.size(); j++)
 			{
 				tinygltf::AnimationChannel glTFChannel = glTFAnimation.channels[j];
@@ -813,15 +735,10 @@ public:
 			const tinygltf::Scene& scene = glTFInput.scenes[0];
 			for (size_t i = 0; i < scene.nodes.size(); i++) {
 				const tinygltf::Node node = glTFInput.nodes[scene.nodes[i]];
-				glTFModel.loadNode(node, glTFInput, nullptr, indexBuffer, vertexBuffer);
+				glTFModel.loadNode(node, glTFInput, nullptr,scene.nodes[i], indexBuffer, vertexBuffer);
 			}
-			glTFModel.loadSkins(glTFInput);
+			//glTFModel.loadSkins(glTFInput);
 			glTFModel.loadAnimations(glTFInput);
-			// Calculate initial pose
-			for (auto node : glTFModel.nodes)
-			{
-				glTFModel.updateJoints(node);
-			}
 		}
 		else {
 			vks::tools::exitFatal("Could not open the glTF file.\n\nThe file is part of the additional asset pack.\n\nRun \"download_assets.py\" in the repository root to download the latest version.", -1);
