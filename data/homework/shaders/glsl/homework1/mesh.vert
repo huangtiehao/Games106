@@ -29,7 +29,6 @@ void main()
 	outColor = inColor;
 	outUV = inUV;
 	gl_Position = uboScene.projection * uboScene.view * primitive.model * vec4(inPos.xyz, 1.0);
-	
 	vec4 pos = uboScene.view * vec4(inPos, 1.0);
 	outNormal = mat3(uboScene.view) * inNormal;
 	vec3 lPos = mat3(uboScene.view) * uboScene.lightPos.xyz;
