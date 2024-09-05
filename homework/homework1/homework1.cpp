@@ -431,7 +431,7 @@ public:
 	*/
 
 	// Draw a single node including child nodes (if present)
-	void drawNode(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VulkanglTFModel::Node* node)
+	void drawNode(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, Node* node)
 	{
 		if (node->mesh.primitives.size() > 0) {
 			// Pass the node's matrix via push constants
@@ -445,7 +445,9 @@ public:
 			}
 			// Pass the final matrix to the vertex shader using push constants
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &nodeMatrix);
-			
+			// Bind SSBO with skin data for this node to set 2
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,2, 1, &skins[node->skin].descriptorSet,0, nullptr);
+
 			for (VulkanglTFModel::Primitive& primitive : node->mesh.primitives) {
 				if (primitive.indexCount > 0) {
 					// Get the texture index for this primitive
@@ -455,9 +457,7 @@ public:
 					vkCmdDrawIndexed(commandBuffer, primitive.indexCount, 1, primitive.firstIndex, 0, 0);
 				}
 			}
-			// Bind SSBO with skin data for this node to set 2
-			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,2, 1, &skins[node->skin].descriptorSet,
-				0, nullptr);
+
 		}
 		for (auto& child : node->children) {
 			drawNode(commandBuffer, pipelineLayout, child);
@@ -957,7 +957,8 @@ public:
 
 	void loadAssets()
 	{
-		loadglTFFile(getAssetPath() + "buster_drone/busterDrone.gltf");
+		loadglTFFile(getAssetPath() + "models/CesiumMan/glTF/CesiumMan.gltf");
+		//loadglTFFile(getAssetPath() + "buster_drone/busterDrone.gltf");
 	}
 
 	void setupDescriptors()
